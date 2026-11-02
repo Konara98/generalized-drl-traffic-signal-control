@@ -181,10 +181,10 @@ def trip_metrics(path):
     )
 
 
-def write_actuated(scenario, path, max_gap=3.0, max_scale=2.0):
+def write_actuated(scenario, path, max_gap=3.0, max_scale=2.0, min_green=MIN_GREEN):
     """Copy the city plan as a SUMO actuated program.
 
-    Greens can be cut to MIN_GREEN or extended up to max_scale x their planned
+    Greens can be cut to min_green or extended up to max_scale x their planned
     length while induction loops (placed automatically by SUMO) still see
     vehicles arriving less than max_gap seconds apart. Yellows are unchanged.
     """
@@ -198,19 +198,46 @@ def write_actuated(scenario, path, max_gap=3.0, max_scale=2.0):
             s = p.get("state")
             if "y" not in s and ("G" in s or "g" in s):
                 dur = float(p.get("duration"))
-                q.set("minDur", str(MIN_GREEN))
-                q.set("maxDur", str(max(dur * max_scale, MIN_GREEN + 1)))
+                q.set("minDur", str(min_green))
+                q.set("maxDur", str(max(dur * max_scale, min_green + 1)))
     ET.ElementTree(root).write(path)
+
+
+def phase_movements(env):
+    """For every signal, the (incoming lane, outgoing lane) movements that each green phase serves."""
+    out = {}
+    for t in env.ts_ids:
+        links = env.sumo.trafficlight.getControlledLinks(t)          # one list of links per signal index
+        phases = []
+        for ph in env.traffic_signals[t].green_phases:
+            moves = {(l[0], l[1]) for i, ch in enumerate(ph.state) if ch in "Gg" and i < len(links)
+                     for l in links[i] if l}
+            phases.append(sorted(moves))
+        out[t] = phases
+    return out
+
+
+def max_pressure_phase(env, t, phases):
+    """Max-pressure control: the green phase whose movements have the largest
+    sum of (vehicles on the incoming lane - vehicles on the outgoing lane).
+    Ties keep the current phase. Timing (5 s decisions, minimum green, yellow)
+    is enforced by sumo-rl exactly as for the RL agents."""
+    count = env.sumo.lane.getLastStepVehicleNumber
+    pressure = [sum(count(i) - count(o) for i, o in moves) for moves in phases]
+    current = env.traffic_signals[t].green_phase
+    best = max(range(len(phases)), key=lambda k: (pressure[k], k == current))
+    return best
 
 
 def run_episode(scenario, route_file, controller, sumo_seed=0, rng_seed=0, policy=None, actuated=None,
                 on_step=None):
     """Simulate one hour and return trip_metrics.
 
-    controller: "fixed"    - the city's signal plan from the .net.xml
-                "actuated" - the same plan, greens stretched/cut by detectors
-                "random"   - a random green phase every 5 s (sanity check)
-                "rl"       - policy(obs_matrix) -> one action per light
+    controller: "fixed"       - the city's signal plan from the .net.xml
+                "actuated"    - the same plan, greens stretched/cut by detectors
+                "maxpressure" - every 5 s the green phase with the largest pressure
+                "random"      - a random green phase every 5 s (sanity check)
+                "rl"          - policy(obs_matrix) -> one action per light
     """
     tmp = tempfile.mkdtemp(prefix="tsc_")
     trip = os.path.join(tmp, "trip.xml")
@@ -228,12 +255,16 @@ def run_episode(scenario, route_file, controller, sumo_seed=0, rng_seed=0, polic
                 env.sumo.trafficlight.setProgram(t, "actuated")
         ad = Adapter(env)
         rng = np.random.default_rng(rng_seed)
+        if controller == "maxpressure":
+            movements = phase_movements(env)
         done = False
         while not done:
             if fixed:
                 acts = {}
             elif controller == "random":
                 acts = {t: int(rng.integers(n)) for t, n in zip(ad.ids, ad.n_act)}
+            elif controller == "maxpressure":
+                acts = {t: max_pressure_phase(env, t, movements[t]) for t in ad.ids}
             else:
                 acts = ad.actions(policy(ad.obs(obs)))
             obs, _, dones, _ = env.step(acts)
@@ -471,7 +502,14 @@ class MaskedSharedPolicy(ActorCriticPolicy):
 # "-mask" = shared network with valid-action masking instead of mapping a -> a mod P_i
 # (both only meaningful for multi-light scenarios).
 ALGOS = {"dqn": DQN, "ddqn": DoubleDQN, "ppo": PPO, "a2c": A2C, "ppo-ind": PPO, "a2c-ind": A2C,
-         "a2c-mask": A2C}
+         "a2c-mask": A2C, "dqn-buf200k": DQN, "dqn-tgt2000": DQN, "dqn-exp30": DQN}
+
+# DQN sensitivity variants (reviewer question 2): one hyperparameter changed each.
+HP_OVERRIDES = {
+    "dqn-buf200k": {"buffer_size": 200_000},          # 4x larger replay buffer
+    "dqn-tgt2000": {"target_update_interval": 2000},  # 4x slower target-network copies
+    "dqn-exp30": {"exploration_fraction": 0.3},       # exploration over the first 30% instead of 10%
+}
 MAIN_ALGOS = ["dqn", "ddqn", "ppo", "a2c"]
 
 

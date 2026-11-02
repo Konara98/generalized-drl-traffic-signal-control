@@ -25,11 +25,11 @@ FAIL_RATIO = 2.0   # an episode "fails" if its total wait is more than 2x fixed-
 
 def learning_curves():
     plt.rcParams.update({"font.size": 8, "font.family": "serif", "axes.linewidth": 0.6})
-    fig, axes = plt.subplots(1, 3, figsize=(7.16, 1.8))
+    fig, axes = plt.subplots(1, 3, figsize=(7.16, 1.5))
     for ax, s in zip(axes, SCEN):
         fixed = json.load(open(os.path.join(RES, s, "actuated_params.json")))["fixed_val_score"]
         for a in ALGOS:
-            logs = [pd.read_csv(f) for f in glob.glob(os.path.join(RES, s, f"{a}_64x64_variants", "seed*", "val_log.csv"))]
+            logs = [pd.read_csv(f) for f in glob.glob(os.path.join(RES, s, f"{a}_64x64_variants", "seed[0-4]", "val_log.csv"))]
             # median seed and interquartile band: robust to the occasional gridlocked checkpoint
             g = pd.concat(logs).groupby("episode")["val_avg_total_wait"]
             q1, med, q3 = g.quantile(0.25), g.median(), g.quantile(0.75)

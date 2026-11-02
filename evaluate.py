@@ -13,6 +13,8 @@ On a given test file every controller gets the same SUMO seed, so differences
 come from the controller and not from random driver behaviour.
 
   python evaluate.py --tune-actuated --scenarios cologne1 ingolstadt1 cologne3   # once, before testing
+  python evaluate.py --tune-actuated --wide --scenarios cologne1 ingolstadt1 cologne3   # 40-setting grid
+  python evaluate.py --redo actuated   # re-test actuated control after re-tuning
   python evaluate.py --scenarios cologne1 ingolstadt1 cologne3 --int8 --workers 6
 
 Output in results/:
@@ -34,6 +36,9 @@ METRICS = ["vehicles", "finished", "avg_total_wait", "avg_wait", "avg_entry_wait
 COLUMNS = KEY + ["algo", "net", "train_set", "demand"] + METRICS
 RANDOM_SEEDS = range(5)
 ACTUATED_GRID = [dict(max_gap=g, max_scale=m) for g in (2.0, 3.0, 4.0) for m in (1.5, 2.0, 3.0)]
+# --wide: 40 settings, also varying the minimum green (reviewer question 9)
+ACTUATED_GRID_WIDE = [dict(max_gap=g, max_scale=m, min_green=mg)
+                      for g in (1.0, 2.0, 3.0, 4.0, 5.0) for m in (1.5, 2.0, 3.0, 4.0) for mg in (5, 10)]
 
 _policies = {}
 
@@ -55,7 +60,7 @@ def load_policy(model_path, algo, precision):
 def run_job(job):
     th.set_num_threads(1)
     policy = None
-    if job["controller"] not in ("fixed", "actuated", "random"):
+    if job["controller"] not in ("fixed", "actuated", "random", "maxpressure"):
         policy = load_policy(job["model"], job["algo"], job["precision"])
     m = C.run_episode(job["scenario"], job["path"], "rl" if policy else job["controller"],
                       sumo_seed=job["sumo_seed"], rng_seed=job["seed"], policy=policy,
@@ -84,14 +89,14 @@ def actuated_params(scenario):
     return dict(max_gap=3.0, max_scale=2.0)
 
 
-def tune_actuated(scenarios, workers):
+def tune_actuated(scenarios, workers, grid=ACTUATED_GRID):
     """Pick actuated settings on the VALIDATION files, so actuated is a fair, tuned baseline."""
     for s in scenarios:
         files = C.split_files(s, "val")
         jobs = [dict(scenario=s, controller="actuated", seed=0, precision="", path=f,
                      route_file=os.path.basename(f), demand=demand_level(f),
                      sumo_seed=C.VAL_SUMO_SEED + i, actuated=p, cfg=k)
-                for k, p in enumerate(ACTUATED_GRID) for i, f in enumerate(files)]
+                for k, p in enumerate(grid) for i, f in enumerate(files)]
         jobs += [dict(scenario=s, controller="fixed", seed=0, precision="", path=f,
                       route_file=os.path.basename(f), demand=demand_level(f),
                       sumo_seed=C.VAL_SUMO_SEED + i, cfg=-1) for i, f in enumerate(files)]
@@ -101,13 +106,13 @@ def tune_actuated(scenarios, workers):
         best = min((k for k in mean if k >= 0), key=mean.get)
         print(f"\n== {s}: actuated tuning on {len(files)} validation files (avg total wait, s)")
         print(f"  fixed-time                     {mean[-1]:7.1f}")
-        for k, p in enumerate(ACTUATED_GRID):
-            print(f"  max_gap {p['max_gap']:.0f}  max green x{p['max_scale']:.1f}   {mean[k]:7.1f}"
+        for k, p in enumerate(grid):
+            print(f"  max_gap {p['max_gap']:.0f}  max green x{p['max_scale']:.1f}  min green {p.get('min_green', C.MIN_GREEN)}  {mean[k]:7.1f}"
                   f"{'   <- chosen' if k == best else ''}")
         os.makedirs(os.path.join(C.RESULTS, s), exist_ok=True)
         with open(os.path.join(C.RESULTS, s, "actuated_params.json"), "w") as fh:
-            json.dump(dict(best=ACTUATED_GRID[best], fixed_val_score=mean[-1],
-                           grid=[dict(p, val_score=mean[k]) for k, p in enumerate(ACTUATED_GRID)]),
+            json.dump(dict(best=grid[best], fixed_val_score=mean[-1],
+                           grid=[dict(p, val_score=mean[k]) for k, p in enumerate(grid)]),
                       fh, indent=2)
 
 
@@ -122,6 +127,7 @@ def build_jobs(scenarios, split, int8, which):
             jobs.append(dict(base, controller="fixed", seed=0, precision=""))
             jobs.append(dict(base, controller="actuated", seed=0, precision="", actuated=act))
             jobs += [dict(base, controller="random", seed=k, precision="") for k in RANDOM_SEEDS]
+            jobs.append(dict(base, controller="maxpressure", seed=0, precision=""))
             for model in runs:
                 tag = os.path.basename(os.path.dirname(os.path.dirname(model)))
                 algo, net, train_set = C.parse_tag(tag)
@@ -146,8 +152,9 @@ def summarise(episodes_csv, out_csv):
     summ = summ.reset_index()
     fixed = summ[summ.controller == "fixed"].set_index(["scenario", "demand"])["avg_total_wait_mean"]
     summ["vs_fixed_pct"] = [100 * (fixed[(r.scenario, r.demand)] - r.avg_total_wait_mean) / fixed[(r.scenario, r.demand)]
+                            if (r.scenario, r.demand) in fixed.index else float("nan")   # absent with --rl-only
                             for r in summ.itertuples()]
-    order = {"fixed": 0, "actuated": 1, "random": 2}
+    order = {"fixed": 0, "actuated": 1, "maxpressure": 2, "random": 3}
     summ["_o"] = summ.controller.map(lambda c: order.get(c, 3))
     summ = summ.sort_values(["scenario", "demand", "_o", "controller", "precision"]).drop(columns="_o")
     summ.round(3).to_csv(out_csv, index=False)
@@ -167,22 +174,34 @@ def main():
     ap.add_argument("--split", choices=["test", "val"], default="test")
     ap.add_argument("--int8", action="store_true", help="also test INT8-quantised RL policies")
     ap.add_argument("--model", choices=["best", "final"], default="best")
+    ap.add_argument("--rl-only", action="store_true", help="skip fixed-time, actuated and random control")
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 2))
     ap.add_argument("--tune-actuated", action="store_true", help="tune actuated on validation, then stop")
+    ap.add_argument("--wide", action="store_true", help="with --tune-actuated: 40-setting grid incl. minimum green")
+    ap.add_argument("--redo", nargs="+", default=[], metavar="CONTROLLER",
+                    help="delete these controllers' test episodes first, e.g. after re-tuning actuated")
     a = ap.parse_args()
 
     if a.tune_actuated:
-        tune_actuated(a.scenarios, a.workers)
+        tune_actuated(a.scenarios, a.workers, ACTUATED_GRID_WIDE if a.wide else ACTUATED_GRID)
         return
 
     os.makedirs(C.RESULTS, exist_ok=True)
-    episodes_csv = os.path.join(C.RESULTS, f"{a.split}_episodes.csv")
+    # final-model results go to their own files, so they never mix with the validation-best ones
+    tag = a.split if a.model == "best" else f"{a.split}_final"
+    episodes_csv = os.path.join(C.RESULTS, f"{tag}_episodes.csv")
+    if a.redo and os.path.exists(episodes_csv):
+        old = pd.read_csv(episodes_csv)
+        keep = old[~(old.controller.isin(a.redo) & old.scenario.isin(a.scenarios))]
+        keep.to_csv(episodes_csv, index=False)
+        print(f"--redo: removed {len(old) - len(keep)} episodes of {', '.join(a.redo)}")
     done = set()
     if os.path.exists(episodes_csv):
         with open(episodes_csv) as fh:
             done = {tuple(r[k] for k in KEY) for r in csv.DictReader(fh)}
     jobs = [j for j in build_jobs(a.scenarios, a.split, a.int8, a.model)
-            if tuple(str(j[k]) for k in KEY) not in done]
+            if tuple(str(j[k]) for k in KEY) not in done
+            and not (a.rl_only and j["controller"] in ("fixed", "actuated", "random", "maxpressure"))]
     print(f"{len(jobs)} episodes to run ({len(done)} already done), {a.workers} workers")
 
     new = not os.path.exists(episodes_csv)
@@ -202,8 +221,8 @@ def main():
 
         run_parallel(jobs, a.workers, on_row)
 
-    summarise(episodes_csv, os.path.join(C.RESULTS, f"{a.split}_summary.csv"))
-    print(f"\nwritten: {episodes_csv}\n         {os.path.join(C.RESULTS, f'{a.split}_summary.csv')}")
+    summarise(episodes_csv, os.path.join(C.RESULTS, f"{tag}_summary.csv"))
+    print(f"\nwritten: {episodes_csv}\n         {os.path.join(C.RESULTS, f'{tag}_summary.csv')}")
 
 
 if __name__ == "__main__":

@@ -72,9 +72,9 @@ def main():
 
     venv = C.TrafficVecEnv(s, train_files, a.seed)
     base = a.algo.split("-")[0]
-    hp = dict(HYPER[base], **({"learning_rate": a.lr} if a.lr else {}))
+    hp = dict(HYPER[base], **C.HP_OVERRIDES.get(a.algo, {}), **({"learning_rate": a.lr} if a.lr else {}))
     policy, pk = "MlpPolicy", dict(net_arch=list(a.net), activation_fn=th.nn.ReLU)
-    if "-" in a.algo and not venv.ad.tagged:
+    if a.algo.endswith(("-ind", "-mask")) and not venv.ad.tagged:
         raise SystemExit(f"{a.algo} needs a scenario with several traffic lights (e.g. cologne3).")
     if a.algo.endswith("-ind"):            # ablation C2: one independent network per traffic light
         policy, pk["n_lights"] = C.IndependentPolicy, len(venv.ad.ids)

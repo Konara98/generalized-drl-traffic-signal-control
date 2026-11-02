@@ -1,0 +1,7 @@
+scenario,variant,seeds,episodes,failed_episodes,failing_seeds,fisher_p_episodes,fisher_p_seeds,wilcoxon_p_files,median_episode
+cologne1,full (C1+C2),5,50,0,0,,,,10.2595
+cologne1,-C1 real hour only,5,50,1,1,1.0,1.0,0.921875,10.5115
+cologne3,full (C1+C2),5,50,1,1,,,,9.685
+cologne3,-C1 real hour only,5,50,6,4,0.11174961771814726,0.2063492063492064,0.00390625,10.73
+cologne3,-C2 independent,5,50,4,4,0.3621784858898261,0.2063492063492064,0.064453125,10.545
+cologne3,+ masking,5,50,4,4,0.3621784858898261,0.2063492063492064,0.037109375,10.5215
