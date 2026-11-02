@@ -114,16 +114,6 @@ this tiny.
 Each configuration gets its own folder (`<algo>_<net>_<train-set>`), so all of them appear
 side by side in the same summary table.
 
-### Running on Google Colab instead
-
-`colab/01_train.ipynb` (Steps E and H) and `colab/02_evaluate.ipynb` (Steps B, F and G) do the same work on Colab.
-In Colab use **File → Open notebook → GitHub** and paste this repository's URL.
-The notebooks clone this repository and install the same package versions. They save
-everything to `MyDrive/icarc_results`, so a disconnect loses at most the runs in progress.
-Choose a **CPU** runtime. A GPU does not help here: the time goes into the SUMO simulator,
-and the networks are too small to benefit. More CPU cores is what speeds things up.
-Colab is most useful running *alongside* the PC on different scenarios.
-
 ## 4. Reading the results
 
 `results/test_summary.csv` has one row per scenario x demand level x controller x precision:
@@ -164,6 +154,5 @@ Colab is most useful running *alongside* the PC on different scenarios.
 | `run_all.py` | runs many `train.py` jobs in parallel; skips finished ones |
 | `evaluate.py` | tunes actuated (`--tune-actuated`) and tests all controllers on all test files |
 | `measure_policy.py` | size and speed of trained policies, FP32 vs INT8 |
-| `colab/01_train.ipynb`, `colab/02_evaluate.ipynb` | the same steps on Google Colab, with results in Google Drive |
 | `make_splits.py`, `inspect_scenarios.py`, `inspect_network.py` | data preparation and description |
 | `baselines.py`, `time_episodes.py`, `train_dqn.py` | older first versions, replaced by `evaluate.py` and `train.py` |
