@@ -2,3 +2,7 @@
 Project proposal/
 __pycache__/
 *.pyc
+# manuscript, comments and template stay local; only the analysis scripts are public
+paper/*
+!paper/make_figures.py
+!paper/robust_stats.py
